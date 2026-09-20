@@ -25,6 +25,26 @@ final class LicenseManagerTests: XCTestCase {
 
     // MARK: - Launch / initialize
 
+    func testLocallyUnlockedBuildStartsProWithoutTrialOrValidation() {
+        keychain.setValue("LICENSE-ABC", account: LicenseManager.keychainKeyAccount)
+        keychain.setValue("instance-1", account: LicenseManager.keychainInstanceAccount)
+        let staleValidation = clock.now.addingTimeInterval(-31 * 86400).timeIntervalSince1970
+        defaults.set(staleValidation, forKey: "lastValidation")
+        let localManager = LicenseManager(
+            clock: clock,
+            keychain: keychain,
+            api: api,
+            defaults: defaults,
+            isLocallyUnlocked: true)
+        localManager.initialize()
+        localManager.revalidateWithServer()
+        XCTAssertEqual(localManager.state, .pro)
+        XCTAssertTrue(localManager.isProAvailable)
+        XCTAssertFalse(localManager.isProLocked)
+        XCTAssertNil(localManager.trialStartDate)
+        XCTAssertEqual(api.validateCalls.count, 0)
+    }
+
     func testFirstLaunchStartsTrial() {
         manager.initialize()
         guard case .trial(let days) = manager.state else { return XCTFail("expected .trial, got \(manager.state)") }

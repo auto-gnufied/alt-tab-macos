@@ -20,7 +20,8 @@ class LicenseManager {
             clock: SystemClock(),
             keychain: keychain,
             api: RemoteLicenseClient(baseUrl: Endpoints.licenseApiBaseUrl, keychain: keychain),
-            defaults: UserDefaults(suiteName: defaultsSuiteName)!
+            defaults: UserDefaults(suiteName: defaultsSuiteName)!,
+            isLocallyUnlocked: true
         )
     }()
 
@@ -41,6 +42,7 @@ class LicenseManager {
     let keychain: Keychain
     let api: LicenseAPI
     let defaults: UserDefaults
+    private let isLocallyUnlocked: Bool
 
     /// Called whenever `state` changes (including the initial `initialize()` assignment).
     /// Production wires this up in App.swift to refresh Menubar, sync Sparkle cookie, and notify ProTransitionManager.
@@ -124,11 +126,13 @@ class LicenseManager {
         return daysSinceTrialStart + 1
     }
 
-    init(clock: Clock, keychain: Keychain, api: LicenseAPI, defaults: UserDefaults) {
+    init(clock: Clock, keychain: Keychain, api: LicenseAPI, defaults: UserDefaults,
+         isLocallyUnlocked: Bool = false) {
         self.clock = clock
         self.keychain = keychain
         self.api = api
         self.defaults = defaults
+        self.isLocallyUnlocked = isLocallyUnlocked
     }
 
     func initialize() {
@@ -223,6 +227,7 @@ class LicenseManager {
         #if DEBUG
         if hasMockedLicense { return state }
         #endif
+        if isLocallyUnlocked { return .pro }
         if keychain.value(account: Self.keychainKeyAccount) != nil {
             let lastValidationResult = defaults.bool(forKey: "lastValidationResult")
             guard lastValidationResult else { return .trialExpired }
@@ -249,6 +254,7 @@ class LicenseManager {
     }
 
     func scheduleAsyncRevalidationIfNeeded() {
+        guard !isLocallyUnlocked else { return }
         let lastValidation = defaults.double(forKey: "lastValidation")
         let elapsed = clock.now.timeIntervalSince1970 - lastValidation
         guard elapsed >= Self.revalidationInterval else { return }
@@ -256,6 +262,7 @@ class LicenseManager {
     }
 
     func revalidateWithServer() {
+        guard !isLocallyUnlocked else { return }
         guard let licenseKey = keychain.value(account: Self.keychainKeyAccount),
               let instanceId = keychain.value(account: Self.keychainInstanceAccount) else { return }
         api.validate(licenseKey, instanceId: instanceId) { [weak self] result in
