@@ -6,6 +6,8 @@
 
 `LicenseManager` is the single source of truth for whether the user has AltTab **Pro**. It computes a `LicenseState` and notifies observers when it changes. The state drives every Pro gate in the app (search, lock-search, extra shortcuts, App Icons / Titles styles, Auto size, search-on-release) and the Pro-transition prompts.
 
+The app singleton is configured with `isLocallyUnlocked: true`. Local builds therefore resolve directly to `.pro`, do not create a trial, and do not call the validation endpoint. The cloud-managed path remains injectable for its unit tests.
+
 It is built from three injected collaborators so the logic is testable without real I/O — the tests pass in mocks (`MockClock`, `MockKeychain`, `MockLicenseAPI`, all defined inline at the bottom of `LicenseManagerTests.swift`):
 
 - **`Clock`** — current time. Lets tests fast-forward the trial without sleeping.
@@ -24,6 +26,7 @@ It is built from three injected collaborators so the logic is testable without r
 
 ### Behavior & edge cases (the load-bearing rules)
 
+- **Local builds are permanently Pro.** `computeState()` returns `.pro` before reading the Keychain or trial defaults, and both scheduled and explicit revalidation skip the API.
 - **Trial length is 14 days, 0-indexed internally.** Day 0 = first launch → `.trial(14)`; day 13 → `.trial(1)`; day 14 → `.trialExpired`. The trial start is persisted on first launch and **never reset** on relaunch.
 - **No grace period.** `isProLocked` is true the instant the trial expires — degradable Pro prefs downgrade immediately (this pairs with `ProTransitionManager.onProLockEngaged()`).
 - **Keychain writes are all-or-nothing.** Activation writes key + instance + variant; if **any** write fails, every prior write is rolled back, validation timestamps are *not* written, and the state stays `.trial` — never a half-activated `.pro`. This is the most important invariant in the file.
@@ -41,6 +44,7 @@ It is built from three injected collaborators so the logic is testable without r
 Mirrors `LicenseManagerTests.swift` 1:1. Each test uses an isolated `UserDefaults(suiteName:)` (fresh per test, torn down after) so runs don't leak into each other.
 
 ### A. Launch / initialize
+- **testLocallyUnlockedBuildStartsProWithoutTrialOrValidation** — the locally unlocked configuration resolves to `.pro`, creates no trial, and makes no validation request even with stale validation data.
 - **testFirstLaunchStartsTrial** — first launch with no stored data → `.trial(14)`, `trialStartDate` set to now.
 - **testSecondLaunchPreservesTrialStart** — relaunch 3 days later reuses the original `trialStartDate` → `.trial(11)`, not a fresh trial.
 - **testTrialMidway** — trial started 7 days ago → `.trial(7)`.
