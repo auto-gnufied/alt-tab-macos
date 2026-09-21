@@ -18,6 +18,7 @@ struct OrderWindow: Equatable {
     let app: ApplicationState
     let searchMatches: Bool       // Search.matches (only meaningful when search is active)
     let searchRelevance: Double   // Search.relevance
+    let isLearnedApplication: Bool
 }
 
 struct ApplicationRepresentativeCandidate: Equatable {
@@ -59,6 +60,7 @@ enum WindowOrderResolver {
                                 sortType: OrderSortType = .recentlyFocused) -> Bool {
         if searchActive {
             if a.searchMatches != b.searchMatches { return a.searchMatches }
+            if a.isLearnedApplication != b.isLearnedApplication { return a.isLearnedApplication }
             if a.searchRelevance != b.searchRelevance { return a.searchRelevance > b.searchRelevance }
             return a.state.lastFocusOrder < b.state.lastFocusOrder
         }

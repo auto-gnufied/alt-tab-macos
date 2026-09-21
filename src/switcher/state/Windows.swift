@@ -538,6 +538,8 @@ class Windows {
         // Raw, as `shouldDisplay` passes it: smart-case reads its uppercase letters, and `Search` caches per raw query.
         let query = SwitcherSession.current?.searchQuery ?? ""
         let normalizedQuery = Search.normalizedQuery(query)
+        let preferredBundleIdentifier = normalizedQuery.isEmpty ? nil
+            : SearchSelectionLearning.preferredBundleIdentifier(for: normalizedQuery)
         let shortcutIndex = (SwitcherSession.current?.shortcutIndex ?? 0)
         // Hoisted once per sort: locals are captured by the comparator closure so each of the
         // O(n log n) comparisons reads them directly.
@@ -547,7 +549,9 @@ class Windows {
         let minimizedAtEnd = Preferences.showMinimizedWindows(shortcutIndex) == .showAtTheEnd
         let sortType = orderSortType(Preferences.windowOrder(shortcutIndex))
         // Precompute each window's ordering facts once (O(n) Search calls), then sort on the snapshots.
-        let facts = Dictionary(uniqueKeysWithValues: list.map { (ObjectIdentifier($0), orderWindow($0, query, searchActive)) })
+        let facts = Dictionary(uniqueKeysWithValues: list.map {
+            (ObjectIdentifier($0), orderWindow($0, query, searchActive, preferredBundleIdentifier))
+        })
         list.sort {
             WindowOrderResolver.isOrderedBefore(
                 facts[ObjectIdentifier($0)]!, facts[ObjectIdentifier($1)]!,
@@ -559,12 +563,16 @@ class Windows {
         }
     }
 
-    private static func orderWindow(_ window: Window, _ query: String, _ searchActive: Bool) -> OrderWindow {
-        OrderWindow(
+    private static func orderWindow(_ window: Window, _ query: String, _ searchActive: Bool,
+                                    _ preferredBundleIdentifier: String?) -> OrderWindow {
+        let searchMatches = searchActive ? Search.matches(window, query: query) : false
+        return OrderWindow(
             state: window.state,
             app: window.application.state,
-            searchMatches: searchActive ? Search.matches(window, query: query) : false,
-            searchRelevance: searchActive ? Search.relevance(for: window, query: query) : 0)
+            searchMatches: searchMatches,
+            searchRelevance: searchActive ? Search.relevance(for: window, query: query) : 0,
+            isLearnedApplication: searchMatches
+                && window.application.state.bundleIdentifier == preferredBundleIdentifier)
     }
 
     private static func orderSortType(_ p: WindowOrderPreference) -> OrderSortType {

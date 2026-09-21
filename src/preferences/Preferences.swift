@@ -18,6 +18,7 @@ class Preferences {
             "searchShortcut": defaultShortcut("S"),
             "showSearchHint": "true",
             "applicationShortcuts": "[]",
+            "learnedSearchSelections": "[]",
             "arrowKeysEnabled": "true",
             "vimKeysEnabled": "false",
             "mouseHoverEnabled": "false",
@@ -103,6 +104,7 @@ class Preferences {
     static var hideShowAppShortcut: Shortcut? { CachedUserDefaults.shortcut("hideShowAppShortcut") }
     static var searchShortcut: Shortcut? { CachedUserDefaults.shortcut("searchShortcut") }
     static var applicationShortcuts: [ApplicationShortcut] { CachedUserDefaults.json("applicationShortcuts", LossyArray<ApplicationShortcut>.self).elements }
+    static var learnedSearchSelections: [LearnedSearchSelection] { CachedUserDefaults.json("learnedSearchSelections", LossyLearnedSearchSelections.self).records }
     static var arrowKeysEnabled: Bool { CachedUserDefaults.bool("arrowKeysEnabled") }
     static var vimKeysEnabled: Bool { CachedUserDefaults.bool("vimKeysEnabled") }
     static var mouseHoverEnabled: Bool { CachedUserDefaults.bool("mouseHoverEnabled") }

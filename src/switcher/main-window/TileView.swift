@@ -347,7 +347,7 @@ class TileView: FlippedView {
         updateAppIcon(element)
         updateDockLabelIcon(element.dockLabel)
         setAccessibilityHelp(getAccessibilityHelp(element.application.localizedName, element.dockLabel))
-        mouseUpCallback = { () -> Void in App.focusSelectedWindow(element) }
+        mouseUpCallback = { () -> Void in App.focusSelectedWindow(element, directTileClick: true) }
         mouseMovedCallback = { () -> Void in Windows.updateSelectedAndHoveredWindowIndex(index, true) }
     }
 

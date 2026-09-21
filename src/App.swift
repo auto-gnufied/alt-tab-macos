@@ -329,8 +329,12 @@ class App: AppCenterApplication {
         KeyRepeatTimer.startRepeatingKeyPreviousWindow()
     }
 
-    static func focusSelectedWindow(_ selectedWindow: Window?) {
+    static func focusSelectedWindow(_ selectedWindow: Window?, directTileClick: Bool = false) {
         MainThreadStall.step()
+        if let session = SwitcherSession.current {
+            SearchSelectionLearning.recordCommittedFocus(session: session, window: selectedWindow,
+                                                          directTileClick: directTileClick)
+        }
         let missionControl = MissionControl.state()
         let window = missionControl == .inactive || missionControl == .showDesktop ? selectedWindow : nil
         guard beginHideUi(window != nil, focusing: window) else { return } // already hidden
