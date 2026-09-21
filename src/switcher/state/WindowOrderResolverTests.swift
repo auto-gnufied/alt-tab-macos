@@ -9,7 +9,7 @@ import XCTest
 /// E alphabetical · F space · G tiebreak/symmetry.
 final class WindowOrderResolverTests: XCTestCase {
 
-    private func w(searchMatches: Bool = false, searchRelevance: Double = 0,
+    private func w(searchMatches: Bool = false, searchRelevance: Double = 0, isLearnedApplication: Bool = false,
                    isWindowlessApp: Bool = false, isHidden: Bool = false, isMinimized: Bool = false,
                    isOnAllSpaces: Bool = false, spaceIndexes: [Int] = [],
                    lastFocusOrder: Int = 0, creationOrder: Int = 0,
@@ -19,7 +19,8 @@ final class WindowOrderResolverTests: XCTestCase {
                                 isOnAllSpaces: isOnAllSpaces, spaceIds: [], spaceIndexes: spaceIndexes,
                                 lastFocusOrder: lastFocusOrder, creationOrder: creationOrder, title: windowTitle)
         let app = ApplicationState(pid: 0, bundleIdentifier: nil, localizedName: appName, isHidden: isHidden)
-        return OrderWindow(state: state, app: app, searchMatches: searchMatches, searchRelevance: searchRelevance)
+        return OrderWindow(state: state, app: app, searchMatches: searchMatches,
+                           searchRelevance: searchRelevance, isLearnedApplication: isLearnedApplication)
     }
 
     // MARK: - A. Search ranking
@@ -41,6 +42,23 @@ final class WindowOrderResolverTests: XCTestCase {
         XCTAssertTrue(WindowOrderResolver.isOrderedBefore(w(searchMatches: true, searchRelevance: 1, lastFocusOrder: 0),
                                                           w(searchMatches: true, searchRelevance: 1, lastFocusOrder: 1),
                                                           searchActive: true))
+    }
+
+    func testLearnedMatchingApplicationSortsBeforeHigherRelevance() {
+        XCTAssertTrue(WindowOrderResolver.isOrderedBefore(
+            w(searchMatches: true, searchRelevance: 1, isLearnedApplication: true),
+            w(searchMatches: true, searchRelevance: 2), searchActive: true))
+    }
+
+    func testLearnedNonmatchDoesNotSortBeforeMatch() {
+        XCTAssertFalse(WindowOrderResolver.isOrderedBefore(
+            w(searchMatches: false, isLearnedApplication: true), w(searchMatches: true), searchActive: true))
+    }
+
+    func testLearnedApplicationWindowsKeepNaturalInternalOrder() {
+        XCTAssertTrue(WindowOrderResolver.isOrderedBefore(
+            w(searchMatches: true, searchRelevance: 2, isLearnedApplication: true),
+            w(searchMatches: true, searchRelevance: 1, isLearnedApplication: true), searchActive: true))
     }
 
     // MARK: - B. Show-at-the-end buckets
