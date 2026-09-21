@@ -1,5 +1,69 @@
 import Cocoa
+import Carbon.HIToolbox.Events
 import ShortcutRecorder
+
+struct ApplicationShortcut: Codable, Equatable, Identifiable {
+    var id: UUID
+    var chord: ApplicationShortcutChord?
+    var bundleIdentifier: String
+    var bundleURL: URL?
+    var displayName: String
+}
+
+struct ApplicationShortcutChord: Codable, Equatable, Hashable {
+    let keyCode: UInt16
+    let modifiers: UInt
+    let keyLabel: String
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.keyCode == rhs.keyCode && lhs.modifiers == rhs.modifiers
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(keyCode)
+        hasher.combine(modifiers)
+    }
+}
+
+struct LossyArray<Element: Decodable>: Decodable {
+    let elements: [Element]
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        var elements = [Element]()
+        while !container.isAtEnd {
+            if let element = try? container.decode(Element.self) { elements.append(element) }
+            else { _ = try container.decode(DiscardedCodableValue.self) }
+        }
+        self.elements = elements
+    }
+}
+
+private struct DiscardedCodableValue: Decodable {
+    init(from decoder: Decoder) throws {
+        if var array = try? decoder.unkeyedContainer() {
+            while !array.isAtEnd { _ = try array.decode(DiscardedCodableValue.self) }
+            return
+        }
+        if let object = try? decoder.container(keyedBy: DynamicCodingKey.self) {
+            for key in object.allKeys { _ = try object.decode(DiscardedCodableValue.self, forKey: key) }
+            return
+        }
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { return }
+        if (try? value.decode(Bool.self)) != nil { return }
+        if (try? value.decode(Double.self)) != nil { return }
+        _ = try value.decode(String.self)
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init?(stringValue: String) { self.stringValue = stringValue; intValue = nil }
+    init?(intValue: Int) { stringValue = String(intValue); self.intValue = intValue }
+}
 
 enum ApplicationShortcutModifiers {
     static let command = UInt(1 << 0)
@@ -18,13 +82,13 @@ enum ApplicationShortcutModifiers {
         return result
     }
 
-    static func from(_ flags: NSEvent.ModifierFlags) -> UInt {
+    static func from(_ flags: NSEvent.ModifierFlags, physicalFunction: Bool) -> UInt {
         var result: UInt = 0
         if flags.contains(.command) { result |= command }
         if flags.contains(.control) { result |= control }
         if flags.contains(.option) { result |= option }
         if flags.contains(.shift) { result |= shift }
-        if flags.contains(.function) { result |= function }
+        if physicalFunction { result |= function }
         return result
     }
 
@@ -36,6 +100,60 @@ enum ApplicationShortcutModifiers {
         if modifiers & shift != 0 { result += "⇧" }
         if modifiers & command != 0 { result += "⌘" }
         return result
+    }
+
+    static func carbon(_ modifiers: UInt) -> UInt32 {
+        var result = UInt32(0)
+        if modifiers & command != 0 { result |= UInt32(cmdKey) }
+        if modifiers & control != 0 { result |= UInt32(controlKey) }
+        if modifiers & option != 0 { result |= UInt32(optionKey) }
+        if modifiers & shift != 0 { result |= UInt32(shiftKey) }
+        return result
+    }
+}
+
+struct ApplicationShortcutKey: Hashable {
+    let keyCode: UInt16
+    let modifiers: UInt
+}
+
+struct ApplicationShortcutTargetCandidate: Equatable {
+    let id: String
+    let windowId: CGWindowID?
+    let isPhantom: Bool
+    let isTabbed: Bool
+    let isWindowless: Bool
+    let lastFocusOrder: Int
+}
+
+enum ApplicationShortcutTargetResolver {
+    static func resolve(_ candidates: [ApplicationShortcutTargetCandidate], lastAttendedWindowId: CGWindowID?) -> String? {
+        let eligible = candidates.filter { !$0.isPhantom && !$0.isTabbed }
+        if let lastAttendedWindowId,
+           let attended = eligible.first(where: { $0.windowId == lastAttendedWindowId && !$0.isWindowless }) {
+            return attended.id
+        }
+        if let window = eligible.filter({ !$0.isWindowless }).min(by: { $0.lastFocusOrder < $1.lastFocusOrder }) {
+            return window.id
+        }
+        return eligible.first(where: { $0.isWindowless })?.id
+    }
+}
+
+final class ApplicationLaunchGate {
+    private var bundleIdentifiers = Set<String>()
+    private let lock = NSLock()
+
+    func begin(_ bundleIdentifier: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return bundleIdentifiers.insert(bundleIdentifier).inserted
+    }
+
+    func finish(_ bundleIdentifier: String) {
+        lock.lock()
+        bundleIdentifiers.remove(bundleIdentifier)
+        lock.unlock()
     }
 }
 

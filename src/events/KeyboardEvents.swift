@@ -280,15 +280,22 @@ class KeyboardEvents {
 
 enum ApplicationShortcutsController {
     private static let lock = NSLock()
-    private static var mappings = [ApplicationShortcutChord: ApplicationShortcut]()
+    private static var fnMappings = [ApplicationShortcutKey: UUID]()
+    private static var mappingsById = [UUID: ApplicationShortcut]()
     private static var suppressedKeyCodes = Set<UInt16>()
     private static var eventTap: CFMachPort?
+    private static var carbonHandler: EventHandlerRef?
+    private static var carbonHotKeys = [EventHotKeyRef?]()
+    private static var carbonMappingIds = [UInt32: UUID]()
     private static var enabled = true
     private static var recording = false
+    private static let launchGate = ApplicationLaunchGate()
+    private static let carbonSignature = "apat".utf16.reduce(0) { ($0 << 8) + OSType($1) }
 
     private static let eventHandler: CGEventTapCallBack = { _, type, event, _ in
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
+            Logger.info { "application-shortcut tap \(type == .tapDisabledByTimeout ? "timed out" : "was disabled by user input")" }
+            DispatchQueue.main.async { updateTapState() }
             return Unmanaged.passUnretained(event)
         }
         guard type == .keyDown || type == .keyUp else { return Unmanaged.passUnretained(event) }
@@ -298,18 +305,15 @@ enum ApplicationShortcutsController {
             return wasSuppressed ? nil : Unmanaged.passUnretained(event)
         }
         let modifiers = ApplicationShortcutModifiers.from(event.flags)
-        let mapping = lock.withLock {
-            mappings.first { $0.key.keyCode == keyCode && $0.key.modifiers == modifiers }?.value
-        }
-        guard let mapping else { return Unmanaged.passUnretained(event) }
+        let mappingId = lock.withLock { fnMappings[ApplicationShortcutKey(keyCode: keyCode, modifiers: modifiers)] }
+        guard let mappingId else { return Unmanaged.passUnretained(event) }
         lock.withLock { _ = suppressedKeyCodes.insert(keyCode) }
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-        if !isRepeat { DispatchQueue.main.async { activate(mapping) } }
+        if !isRepeat { DispatchQueue.main.async { activate(mappingId) } }
         return nil
     }
 
     static func initialize() {
-        refresh()
         let mask = [CGEventType.keyDown, .keyUp].reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
         eventTap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                      eventsOfInterest: mask, callback: eventHandler, userInfo: nil)
@@ -319,36 +323,67 @@ enum ApplicationShortcutsController {
         }
         let source = CFMachPortCreateRunLoopSource(nil, eventTap, 0)
         CFRunLoopAddSource(BackgroundWork.keyboardAndMouseAndTrackpadEventsThread.runLoop, source, .commonModes)
-        updateTapState()
+        installCarbonHandler()
+        refresh()
     }
 
     static func refresh() {
-        let next = Preferences.applicationShortcuts.reduce(into: [ApplicationShortcutChord: ApplicationShortcut]()) {
-            if let chord = $1.chord { $0[chord] = $1 }
+        unregisterCarbonHotKeys()
+        let mappings = Preferences.applicationShortcuts
+        var nextFn = [ApplicationShortcutKey: UUID]()
+        var nextById = [UUID: ApplicationShortcut]()
+        var nextCarbonIds = [UInt32: UUID]()
+        for mapping in mappings {
+            nextById[mapping.id] = mapping
+            guard let chord = mapping.chord else { continue }
+            if chord.modifiers & ApplicationShortcutModifiers.function != 0 {
+                nextFn[ApplicationShortcutKey(keyCode: chord.keyCode, modifiers: chord.modifiers)] = mapping.id
+            } else if enabled && !recording {
+                let hotKeyId = UInt32(nextCarbonIds.count + 1)
+                if let hotKey = registerCarbonHotKey(chord, hotKeyId) {
+                    carbonHotKeys.append(hotKey)
+                    nextCarbonIds[hotKeyId] = mapping.id
+                }
+            }
         }
-        lock.withLock { mappings = next }
+        lock.withLock {
+            fnMappings = nextFn
+            mappingsById = nextById
+            carbonMappingIds = nextCarbonIds
+            if !enabled || recording { suppressedKeyCodes.removeAll(keepingCapacity: true) }
+        }
         updateTapState()
     }
 
     static func setEnabled(_ value: Bool) {
         enabled = value
-        updateTapState()
+        refresh()
     }
 
     static func setRecording(_ value: Bool) {
         recording = value
-        updateTapState()
+        refresh()
     }
 
     private static func updateTapState() {
         guard let eventTap else { return }
-        let shouldEnable = enabled && !recording && lock.withLock { !mappings.isEmpty }
+        let shouldEnable = enabled && !recording && lock.withLock { !fnMappings.isEmpty }
         CGEvent.tapEnable(tap: eventTap, enable: shouldEnable)
     }
 
-    private static func activate(_ mapping: ApplicationShortcut) {
+    private static func activate(_ id: UUID) {
+        guard enabled && !recording, let mapping = lock.withLock({ mappingsById[id] }) else { return }
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier != mapping.bundleIdentifier else { return }
-        if let window = Windows.list.first(where: { $0.application.bundleIdentifier == mapping.bundleIdentifier }) {
+        let windows = Windows.list.filter { $0.application.bundleIdentifier == mapping.bundleIdentifier }
+        let candidates = windows.map {
+            ApplicationShortcutTargetCandidate(id: $0.id, windowId: $0.cgWindowId, isPhantom: $0.isPhantom,
+                                               isTabbed: $0.isTabbed, isWindowless: $0.isWindowlessApp,
+                                               lastFocusOrder: $0.lastFocusOrder)
+        }
+        let pid = windows.first?.application.pid
+        let lastAttended = pid.flatMap { AttentionEngine.lastAttendedWindow($0) }
+        if let id = ApplicationShortcutTargetResolver.resolve(candidates, lastAttendedWindowId: lastAttended),
+           let window = windows.first(where: { $0.id == id }) {
             window.focus()
             return
         }
@@ -360,11 +395,53 @@ enum ApplicationShortcutsController {
             let resolvedURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: mapping.bundleIdentifier)
             let url = resolvedURL ?? mapping.bundleURL
             guard let url else { DispatchQueue.main.async { NSSound.beep() }; return }
+            guard launchGate.begin(mapping.bundleIdentifier) else { return }
             NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                launchGate.finish(mapping.bundleIdentifier)
                 if let error { Logger.error { "application shortcut launch failed: \(error)" } }
             }
         }
     }
+
+    private static func installCarbonHandler() {
+        guard carbonHandler == nil else { return }
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: OSType(kEventHotKeyPressed))
+        InstallEventHandler(GetEventDispatcherTarget(), applicationShortcutCarbonEventHandler,
+                            1, &eventType, nil, &carbonHandler)
+    }
+
+    fileprivate static func handleCarbonEvent(_ nextHandler: EventHandlerCallRef?, _ event: EventRef?) -> OSStatus {
+        var hotKeyId = EventHotKeyID()
+        GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                          MemoryLayout<EventHotKeyID>.size, nil, &hotKeyId)
+        guard hotKeyId.signature == carbonSignature else { return CallNextEventHandler(nextHandler, event) }
+        guard let mappingId = lock.withLock({ carbonMappingIds[hotKeyId.id] }) else { return noErr }
+        DispatchQueue.main.async { activate(mappingId) }
+        return noErr
+    }
+
+    private static func registerCarbonHotKey(_ chord: ApplicationShortcutChord, _ id: UInt32) -> EventHotKeyRef? {
+        var reference: EventHotKeyRef?
+        let status = RegisterEventHotKey(UInt32(chord.keyCode), ApplicationShortcutModifiers.carbon(chord.modifiers),
+                                         EventHotKeyID(signature: carbonSignature, id: id),
+                                         GetEventDispatcherTarget(), UInt32(kEventHotKeyNoOptions), &reference)
+        guard status == noErr else {
+            Logger.error { "application shortcut registration failed keyCode:\(chord.keyCode) status:\(status)" }
+            return nil
+        }
+        return reference
+    }
+
+    private static func unregisterCarbonHotKeys() {
+        carbonHotKeys.forEach { if let reference = $0 { UnregisterEventHotKey(reference) } }
+        carbonHotKeys.removeAll(keepingCapacity: true)
+    }
+
+}
+
+private func applicationShortcutCarbonEventHandler(_ nextHandler: EventHandlerCallRef?, _ event: EventRef?,
+                                                    _ userData: UnsafeMutableRawPointer?) -> OSStatus {
+    ApplicationShortcutsController.handleCarbonEvent(nextHandler, event)
 }
 
 private extension NSLock {
