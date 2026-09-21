@@ -17,6 +17,7 @@ class Preferences {
             "hideShowAppShortcut": defaultShortcut("H"),
             "searchShortcut": defaultShortcut("S"),
             "showSearchHint": "true",
+            "applicationShortcuts": "[]",
             "arrowKeysEnabled": "true",
             "vimKeysEnabled": "false",
             "mouseHoverEnabled": "false",
@@ -101,6 +102,7 @@ class Preferences {
     static var quitAppShortcut: Shortcut? { CachedUserDefaults.shortcut("quitAppShortcut") }
     static var hideShowAppShortcut: Shortcut? { CachedUserDefaults.shortcut("hideShowAppShortcut") }
     static var searchShortcut: Shortcut? { CachedUserDefaults.shortcut("searchShortcut") }
+    static var applicationShortcuts: [ApplicationShortcut] { CachedUserDefaults.json("applicationShortcuts", [ApplicationShortcut].self) }
     static var arrowKeysEnabled: Bool { CachedUserDefaults.bool("arrowKeysEnabled") }
     static var vimKeysEnabled: Bool { CachedUserDefaults.bool("vimKeysEnabled") }
     static var mouseHoverEnabled: Bool { CachedUserDefaults.bool("mouseHoverEnabled") }
@@ -441,6 +443,20 @@ class Preferences {
         guard !digits.isEmpty, let number = Int(digits) else { return 0 }
         return number - 1
     }
+}
+
+struct ApplicationShortcut: Codable, Equatable, Identifiable {
+    var id: UUID
+    var chord: ApplicationShortcutChord?
+    var bundleIdentifier: String
+    var bundleURL: URL?
+    var displayName: String
+}
+
+struct ApplicationShortcutChord: Codable, Equatable, Hashable {
+    let keyCode: UInt16
+    let modifiers: UInt
+    let keyLabel: String
 }
 
 /// **The cache is there because `UserDefaults` is IPC.** Every miss is a round trip to cfprefsd, and the

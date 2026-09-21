@@ -134,6 +134,7 @@ class KeyboardEvents {
             }
             Logger.info { "disabled:\(shouldDisable)" }
             globalShortcutsAreDisabled = shouldDisable
+            ApplicationShortcutsController.setEnabled(!shouldDisable)
             ModifierReleaseLog.reset()
         }
     }
@@ -167,6 +168,7 @@ class KeyboardEvents {
     static func addEventHandlers() {
         addLocalMonitorForKeyDownAndKeyUp()
         addCgEventTap()
+        ApplicationShortcutsController.initialize()
     }
 
     private static func unregisterHotKeyIfNeeded(_ controlId: String, _ shortcut: Shortcut) {
@@ -283,5 +285,102 @@ class KeyboardEvents {
             RemoveEventHandler(hotKeyReleasedEventHandler_)
             hotKeyReleasedEventHandler = nil
         }
+    }
+}
+
+enum ApplicationShortcutsController {
+    private static let lock = NSLock()
+    private static var mappings = [ApplicationShortcutChord: ApplicationShortcut]()
+    private static var suppressedKeyCodes = Set<UInt16>()
+    private static var eventTap: CFMachPort?
+    private static var enabled = true
+    private static var recording = false
+
+    private static let eventHandler: CGEventTapCallBack = { _, type, event, _ in
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
+            return Unmanaged.passUnretained(event)
+        }
+        guard type == .keyDown || type == .keyUp else { return Unmanaged.passUnretained(event) }
+        let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+        if type == .keyUp {
+            let wasSuppressed = lock.withLock { suppressedKeyCodes.remove(keyCode) != nil }
+            return wasSuppressed ? nil : Unmanaged.passUnretained(event)
+        }
+        let modifiers = ApplicationShortcutModifiers.from(event.flags)
+        let mapping = lock.withLock {
+            mappings.first { $0.key.keyCode == keyCode && $0.key.modifiers == modifiers }?.value
+        }
+        guard let mapping else { return Unmanaged.passUnretained(event) }
+        lock.withLock { _ = suppressedKeyCodes.insert(keyCode) }
+        let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+        if !isRepeat { DispatchQueue.main.async { activate(mapping) } }
+        return nil
+    }
+
+    static func initialize() {
+        refresh()
+        let mask = [CGEventType.keyDown, .keyUp].reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
+        eventTap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
+                                     eventsOfInterest: mask, callback: eventHandler, userInfo: nil)
+        guard let eventTap else {
+            Logger.error { "could not create application-shortcut event tap" }
+            return
+        }
+        let source = CFMachPortCreateRunLoopSource(nil, eventTap, 0)
+        CFRunLoopAddSource(BackgroundWork.keyboardAndMouseAndTrackpadEventsThread.runLoop, source, .commonModes)
+        updateTapState()
+    }
+
+    static func refresh() {
+        let next = Preferences.applicationShortcuts.reduce(into: [ApplicationShortcutChord: ApplicationShortcut]()) {
+            if let chord = $1.chord { $0[chord] = $1 }
+        }
+        lock.withLock { mappings = next }
+        updateTapState()
+    }
+
+    static func setEnabled(_ value: Bool) {
+        enabled = value
+        updateTapState()
+    }
+
+    static func setRecording(_ value: Bool) {
+        recording = value
+        updateTapState()
+    }
+
+    private static func updateTapState() {
+        guard let eventTap else { return }
+        let shouldEnable = enabled && !recording && lock.withLock { !mappings.isEmpty }
+        CGEvent.tapEnable(tap: eventTap, enable: shouldEnable)
+    }
+
+    private static func activate(_ mapping: ApplicationShortcut) {
+        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier != mapping.bundleIdentifier else { return }
+        if let window = Windows.list.first(where: { $0.application.bundleIdentifier == mapping.bundleIdentifier }) {
+            window.focus()
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            if let running = NSRunningApplication.runningApplications(withBundleIdentifier: mapping.bundleIdentifier).first {
+                _ = running.activate(options: .activateAllWindows)
+                return
+            }
+            let resolvedURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: mapping.bundleIdentifier)
+            let url = resolvedURL ?? mapping.bundleURL
+            guard let url else { DispatchQueue.main.async { NSSound.beep() }; return }
+            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                if let error { Logger.error { "application shortcut launch failed: \(error)" } }
+            }
+        }
+    }
+}
+
+private extension NSLock {
+    func withLock<T>(_ body: () -> T) -> T {
+        lock()
+        defer { unlock() }
+        return body()
     }
 }
