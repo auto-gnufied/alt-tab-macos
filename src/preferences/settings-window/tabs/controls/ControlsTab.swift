@@ -123,8 +123,9 @@ class ControlsTab {
 
         let shortcutsView = makeShortcutsView()
         let additionalControlsButton = NSButton(title: NSLocalizedString("Additional controls…", comment: ""), target: self, action: #selector(showAdditionalControlsSettings))
+        let applicationShortcutsButton = NSButton(title: NSLocalizedString("Application shortcuts…", comment: ""), target: self, action: #selector(showApplicationShortcutsSettings))
         let shortcutsButton = NSButton(title: NSLocalizedString("Shortcuts when active…", comment: ""), target: self, action: #selector(showShortcutsSettings))
-        let tools = StackView([additionalControlsButton, shortcutsButton], .horizontal)
+        let tools = StackView([additionalControlsButton, applicationShortcutsButton, shortcutsButton], .horizontal)
         let view = TableGroupSetView(originalViews: [shortcutsView], toolsViews: [tools], padding: 0, bottomPadding: 0, othersAlignment: .leading, toolsAlignment: .trailing)
 
         // Sheets are built lazily on first show. Pre-build search visibility is provided by
@@ -717,6 +718,10 @@ class ControlsTab {
     @objc static func showAdditionalControlsSettings() {
         if additionalControlsSheet == nil { additionalControlsSheet = AdditionalControlsSheet() }
         SettingsWindow.shared.beginSheetWithSearchHighlight(additionalControlsSheet)
+    }
+
+    @objc static func showApplicationShortcutsSettings() {
+        ApplicationShortcutsSheet.show()
     }
 
     private static func addShortcut(_ triggerPhase: ShortcutTriggerPhase, _ scope: ShortcutScope, _ shortcut: Shortcut, _ controlId: String, _ index: Int?) {

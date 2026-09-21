@@ -12,14 +12,12 @@ class AdditionalControlsSheet: SheetWindow {
     private static let labelMouse = NSLocalizedString("Select windows on mouse hover", comment: "")
     private static let labelCursorFollow = NSLocalizedString("Cursor follows focus", comment: "")
     private static let labelTrackpad = NSLocalizedString("Trackpad haptic feedback", comment: "")
-    private static let labelApplicationShortcuts = NSLocalizedString("Application shortcuts…", comment: "")
 
     /// Pre-build search index for the open-button. See `SettingsSearchIndex.sheetSearchableStrings`.
     static let searchableStrings: [String] = [
         title, titleMiscellaneous,
         labelArrows, labelVim, labelMouse,
         labelCursorFollow, labelTrackpad,
-        labelApplicationShortcuts,
     ] + CursorFollowFocus.allCases.map { $0.localizedString }
 
     override func makeContentView() -> NSView {
@@ -33,7 +31,6 @@ class AdditionalControlsSheet: SheetWindow {
             rightViews: [LabelAndControl.makeDropdown("cursorFollowFocus", CursorFollowFocus.allCases)])
         let enableTrackpadHapticFeedback = TableGroupView.Row(leftTitle: Self.labelTrackpad,
             rightViews: [LabelAndControl.makeSwitch("trackpadHapticFeedbackEnabled")])
-        let applicationShortcutsButton = Button(Self.labelApplicationShortcuts) { _ in ApplicationShortcutsSheet.show() }
         ControlsTab.arrowKeysCheckbox = enableArrows.rightViews[0] as? Switch
         ControlsTab.vimKeysCheckbox = enableVimKeys.rightViews[0] as? Switch
         ControlsTab.arrowKeysEnabledCallback(ControlsTab.arrowKeysCheckbox)
@@ -45,7 +42,6 @@ class AdditionalControlsSheet: SheetWindow {
         let table2 = TableGroupView(title: Self.titleMiscellaneous, width: SheetWindow.width)
         _ = table2.addRow(enableCursorFollowFocus)
         _ = table2.addRow(enableTrackpadHapticFeedback)
-        _ = table2.addRow(leftText: Self.labelApplicationShortcuts, rightViews: [applicationShortcutsButton])
         let view = TableGroupSetView(originalViews: [table1, table2], padding: 0)
         return view
     }
@@ -53,12 +49,12 @@ class AdditionalControlsSheet: SheetWindow {
 
 final class ApplicationShortcutRecorder: NSButton {
     private var chord: ApplicationShortcutChord?
-    private let onChange: (ApplicationShortcutChord?) -> Void
+    private let onChange: (ApplicationShortcutChord?) -> Bool
     private var recording = false
 
     override var acceptsFirstResponder: Bool { true }
 
-    init(_ chord: ApplicationShortcutChord?, _ onChange: @escaping (ApplicationShortcutChord?) -> Void) {
+    init(_ chord: ApplicationShortcutChord?, _ onChange: @escaping (ApplicationShortcutChord?) -> Bool) {
         self.chord = chord
         self.onChange = onChange
         super.init(frame: .zero)
@@ -77,16 +73,16 @@ final class ApplicationShortcutRecorder: NSButton {
         guard recording else { super.keyDown(with: event); return }
         if event.keyCode == UInt16(kVK_Escape) { finishRecording(); return }
         if event.keyCode == UInt16(kVK_Delete) || event.keyCode == UInt16(kVK_ForwardDelete) {
-            chord = nil
-            onChange(nil)
+            if onChange(nil) { chord = nil }
             finishRecording()
             return
         }
-        let modifiers = ApplicationShortcutModifiers.from(event.modifierFlags)
+        let physicalFn = CGEventSource.flagsState(.combinedSessionState).contains(.maskSecondaryFn)
+        let modifiers = ApplicationShortcutModifiers.from(event.modifierFlags, physicalFunction: physicalFn)
         guard modifiers != 0 else { NSSound.beep(); return }
         let label = event.charactersIgnoringModifiers?.uppercased() ?? String(event.keyCode)
-        chord = ApplicationShortcutChord(keyCode: event.keyCode, modifiers: modifiers, keyLabel: label)
-        onChange(chord)
+        let candidate = ApplicationShortcutChord(keyCode: event.keyCode, modifiers: modifiers, keyLabel: label)
+        if onChange(candidate) { chord = candidate }
         finishRecording()
     }
 
@@ -159,28 +155,99 @@ final class ApplicationShortcutsSheet: SheetWindow {
                 Preferences.set("applicationShortcuts", mappings)
                 self?.rebuild()
             }
-            _ = table.addRow(leftText: mapping.displayName, rightViews: [recorder, remove])
+            let icon = NSImageView(image: AppDisplayInfo.genericIcon)
+            icon.translatesAutoresizingMaskIntoConstraints = false
+            icon.widthAnchor.constraint(equalToConstant: 24).isActive = true
+            icon.heightAnchor.constraint(equalToConstant: 24).isActive = true
+            let name = NSTextField(labelWithString: mapping.displayName)
+            name.setAccessibilityLabel(mapping.displayName)
+            recorder.setAccessibilityLabel(String(format: NSLocalizedString("Shortcut for %@", comment: ""), mapping.displayName))
+            remove.setAccessibilityLabel(String(format: NSLocalizedString("Remove %@", comment: ""), mapping.displayName))
+            _ = table.addRow(leftViews: [icon, name], rightViews: [recorder, remove])
+            Self.loadIcon(mapping, into: icon)
         }
         rowsStack.addArrangedSubview(table)
-        let add = Button(NSLocalizedString("Add Application…", comment: "")) { [weak self] _ in self?.addApplication() }
+        let add = Button(NSLocalizedString("Add Application…", comment: "")) { [weak self] sender in
+            guard let button = sender as? NSButton else { return }
+            self?.showAddMenu(button)
+        }
         rowsStack.addArrangedSubview(add)
         add.trailingAnchor.constraint(equalTo: rowsStack.trailingAnchor).isActive = true
     }
 
-    private static func update(_ id: UUID, _ chord: ApplicationShortcutChord?) {
+    private static func update(_ id: UUID, _ chord: ApplicationShortcutChord?) -> Bool {
         var mappings = Preferences.applicationShortcuts
-        if let chord {
-            for index in mappings.indices where mappings[index].id != id && mappings[index].chord == chord {
-                mappings[index].chord = nil
-            }
-        }
-        guard let index = mappings.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = mappings.firstIndex(where: { $0.id == id }) else { return false }
+        guard resolveConflicts(id, chord, &mappings) else { return false }
         mappings[index].chord = chord
         Preferences.set("applicationShortcuts", mappings)
         shared?.rebuild()
+        return true
     }
 
-    private func addApplication() {
+    private static func resolveConflicts(_ id: UUID, _ chord: ApplicationShortcutChord?, _ mappings: inout [ApplicationShortcut]) -> Bool {
+        guard let chord else { return true }
+        let applicationConflict = mappings.first { $0.id != id && $0.chord == chord }
+        let altTabConflict = chord.modifiers & ApplicationShortcutModifiers.function == 0
+            ? ControlsTab.shortcuts.values.first(where: {
+                UInt16($0.shortcut.carbonKeyCode) == chord.keyCode
+                    && $0.shortcut.carbonModifierFlags == ApplicationShortcutModifiers.carbon(chord.modifiers)
+            }) : nil
+        var names = [String]()
+        if let applicationConflict { names.append(applicationConflict.displayName) }
+        if let altTabConflict, let label = ControlsTab.conflictLabel(altTabConflict.id) { names.append(label) }
+        guard !names.isEmpty else { return true }
+        let list = names.map { "• " + ControlsTab.nonBreaking($0) }.joined(separator: "\n")
+        let message = String(format: NSLocalizedString("Shortcut already assigned to:\n%@", comment: ""), list)
+        guard ControlsTab.confirmUnassigningConflict(message) else { return false }
+        if let applicationConflict, let oldIndex = mappings.firstIndex(where: { $0.id == applicationConflict.id }) {
+            mappings[oldIndex].chord = nil
+        }
+        if let altTabConflict { ControlsTab.unassignShortcut(altTabConflict.id) }
+        return true
+    }
+
+    private func showAddMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        let running = NSMenuItem(title: NSLocalizedString("Add a running app", comment: ""), action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        runningApplications().forEach { app in
+            guard let bundleIdentifier = app.bundleIdentifier else { return }
+            let item = NSMenuItem(title: app.localizedName ?? bundleIdentifier, action: #selector(addRunningApplication(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = bundleIdentifier
+            if let image = app.icon?.copy() as? NSImage { image.size = NSSize(width: 16, height: 16); item.image = image }
+            submenu.addItem(item)
+        }
+        running.submenu = submenu
+        menu.addItem(running)
+        let disk = NSMenuItem(title: NSLocalizedString("Add an app from disk", comment: ""), action: #selector(addApplicationFromDisk(_:)), keyEquivalent: "")
+        disk.target = self
+        menu.addItem(disk)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
+    }
+
+    private func runningApplications() -> [NSRunningApplication] {
+        let existing = Set(Preferences.applicationShortcuts.map { $0.bundleIdentifier })
+        var byIdentifier = [String: NSRunningApplication]()
+        (Windows.list.map { $0.application.runningApplication } + NSWorkspace.shared.runningApplications).forEach {
+            guard $0.activationPolicy == .regular, let identifier = $0.bundleIdentifier,
+                  !existing.contains(identifier), byIdentifier[identifier] == nil else { return }
+            byIdentifier[identifier] = $0
+        }
+        return byIdentifier.values.sorted {
+            ($0.localizedName ?? "").localizedStandardCompare($1.localizedName ?? "") == .orderedAscending
+        }
+    }
+
+    @objc private func addRunningApplication(_ sender: NSMenuItem) {
+        guard let bundleIdentifier = sender.representedObject as? String,
+              let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).first else { return }
+        addApplication(bundleIdentifier, app.bundleURL, app.localizedName)
+    }
+
+    // periphery:ignore:parameters sender - NSMenuItem target/action signature
+    @objc private func addApplicationFromDisk(_ sender: NSMenuItem) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.application]
@@ -188,16 +255,29 @@ final class ApplicationShortcutsSheet: SheetWindow {
         panel.beginSheetModal(for: self) { [weak self] response in
             guard response == .OK, let url = panel.url, let bundle = Bundle(url: url),
                   let bundleIdentifier = bundle.bundleIdentifier else { return }
-            var mappings = Preferences.applicationShortcuts
-            if mappings.contains(where: { $0.bundleIdentifier == bundleIdentifier }) { return }
             let name = (bundle.localizedInfoDictionary?["CFBundleDisplayName"] as? String)
                 ?? (bundle.infoDictionary?["CFBundleDisplayName"] as? String)
                 ?? (bundle.infoDictionary?["CFBundleName"] as? String)
                 ?? url.deletingPathExtension().lastPathComponent
-            mappings.append(ApplicationShortcut(id: UUID(), chord: nil, bundleIdentifier: bundleIdentifier,
-                                                bundleURL: url, displayName: name))
-            Preferences.set("applicationShortcuts", mappings)
-            self?.rebuild()
+            self?.addApplication(bundleIdentifier, url, name)
+        }
+    }
+
+    private func addApplication(_ bundleIdentifier: String, _ bundleURL: URL?, _ displayName: String?) {
+        var mappings = Preferences.applicationShortcuts
+        guard !mappings.contains(where: { $0.bundleIdentifier == bundleIdentifier }) else { return }
+        let name = displayName ?? bundleURL?.deletingPathExtension().lastPathComponent ?? bundleIdentifier
+        mappings.append(ApplicationShortcut(id: UUID(), chord: nil, bundleIdentifier: bundleIdentifier,
+                                            bundleURL: bundleURL, displayName: name))
+        Preferences.set("applicationShortcuts", mappings)
+        rebuild()
+    }
+
+    private static func loadIcon(_ mapping: ApplicationShortcut, into imageView: NSImageView) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak imageView] in
+            let image = mapping.bundleURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
+                ?? AppDisplayInfo.resolve(bundleId: mapping.bundleIdentifier).icon
+            DispatchQueue.main.async { imageView?.image = image }
         }
     }
 }
