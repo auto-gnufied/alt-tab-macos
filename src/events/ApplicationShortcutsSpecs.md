@@ -8,7 +8,8 @@ Application shortcuts bind a physical key chord to an application bundle identif
 - The display label is metadata and is not part of chord equality or hashing.
 - Runtime `fn` comes from `CGEventFlags.maskSecondaryFn`.
 - Recording accepts Function only when the physical Core Graphics Function flag is present. AppKit's implicit `.function` flag on arrows and F-row keys is not treated as a held `fn` modifier.
-- Chords containing Function are detected by the permanent passive keyboard tap, using both tracked flags-changed state and the same physical Function-state query as the recorder. A separate active tap suppresses a matched down/up pair when macOS permits its creation; detection remains functional without it. Duplicate delivery across the two taps is rejected by event timestamp.
+- Chords containing Function are matched only when that key-down's `CGEventFlags` contains `maskSecondaryFn`. Historical modifier state and global modifier snapshots are never added at runtime: a missing flag fails closed rather than turning ordinary typing into a shortcut.
+- The active tap owns matched key-down/key-up suppression when macOS permits its creation. The permanent passive tap is a detection fallback. Duplicate delivery across the taps is rejected by event timestamp, and recording/disabled states fail before matching.
 - Chords without Function use Carbon hotkeys. The application-shortcut Carbon handler forwards events with other signatures to the next handler.
 - The active tap is enabled only when shortcuts are enabled, recording is inactive, and at least one Function mapping exists.
 
@@ -38,4 +39,4 @@ Application Shortcuts is opened directly from Controls, never by attaching a sec
 
 ## Tests
 
-`KeyboardEventsTests.swift` pins modifier normalization, display-label-independent chord identity, resilient decoding, target precedence, phantom/tab rejection, windowless fallback, and launch deduplication. Runtime registration and actual focus/launch remain integration behavior validated with a Release build and manual checks on macOS.
+`KeyboardEventsTests.swift` pins event-scoped Function matching, exact modifiers, missed-release safety, cross-letter isolation, duplicate/repeat handling, disabled/recording behavior, display-label-independent chord identity, resilient decoding, target precedence, phantom/tab rejection, windowless fallback, and launch deduplication. Runtime registration and actual focus/launch remain integration behavior validated with a Release build and manual checks on macOS.
