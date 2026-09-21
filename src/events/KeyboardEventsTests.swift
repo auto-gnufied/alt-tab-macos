@@ -333,10 +333,15 @@ final class KeyboardEventsUtilsTests: XCTestCase {
     }
 
     func testApplicationShortcutModifierNormalizationPreservesFunction() {
-        let cocoa = ApplicationShortcutModifiers.from(NSEvent.ModifierFlags([.function, .shift]))
+        let cocoa = ApplicationShortcutModifiers.from(NSEvent.ModifierFlags([.function, .shift]), physicalFunction: true)
         let quartz = ApplicationShortcutModifiers.from(CGEventFlags([.maskSecondaryFn, .maskShift]))
         XCTAssertEqual(cocoa, quartz)
         XCTAssertEqual(cocoa, ApplicationShortcutModifiers.function | ApplicationShortcutModifiers.shift)
+    }
+
+    func testApplicationShortcutModifierNormalizationIgnoresImplicitCocoaFunction() {
+        let cocoa = ApplicationShortcutModifiers.from(NSEvent.ModifierFlags([.function, .option]), physicalFunction: false)
+        XCTAssertEqual(cocoa, ApplicationShortcutModifiers.option)
     }
 
     func testApplicationShortcutModifierNormalizationIgnoresNoise() {
@@ -347,6 +352,52 @@ final class KeyboardEventsUtilsTests: XCTestCase {
     func testApplicationShortcutModifierDisplayUsesFnFirst() {
         let modifiers = ApplicationShortcutModifiers.function | ApplicationShortcutModifiers.option | ApplicationShortcutModifiers.command
         XCTAssertEqual(ApplicationShortcutModifiers.string(modifiers), "fn ⌥⌘")
+    }
+
+    func testApplicationShortcutChordIdentityIgnoresDisplayLabel() {
+        let first = ApplicationShortcutChord(keyCode: 5, modifiers: ApplicationShortcutModifiers.function, keyLabel: "G")
+        let second = ApplicationShortcutChord(keyCode: 5, modifiers: ApplicationShortcutModifiers.function, keyLabel: "g")
+        XCTAssertEqual(first, second)
+        XCTAssertEqual(Set([first, second]).count, 1)
+    }
+
+    func testApplicationShortcutTargetPrefersLastAttendedEligibleWindow() {
+        let candidates = [
+            ApplicationShortcutTargetCandidate(id: "mru", windowId: 1, isPhantom: false, isTabbed: false, isWindowless: false, lastFocusOrder: 0),
+            ApplicationShortcutTargetCandidate(id: "attended", windowId: 2, isPhantom: false, isTabbed: false, isWindowless: false, lastFocusOrder: 2),
+        ]
+        XCTAssertEqual(ApplicationShortcutTargetResolver.resolve(candidates, lastAttendedWindowId: 2), "attended")
+    }
+
+    func testApplicationShortcutTargetSkipsPhantomAndTabbedWindows() {
+        let candidates = [
+            ApplicationShortcutTargetCandidate(id: "phantom", windowId: 1, isPhantom: true, isTabbed: false, isWindowless: false, lastFocusOrder: 0),
+            ApplicationShortcutTargetCandidate(id: "tab", windowId: 2, isPhantom: false, isTabbed: true, isWindowless: false, lastFocusOrder: 1),
+            ApplicationShortcutTargetCandidate(id: "real", windowId: 3, isPhantom: false, isTabbed: false, isWindowless: false, lastFocusOrder: 2),
+        ]
+        XCTAssertEqual(ApplicationShortcutTargetResolver.resolve(candidates, lastAttendedWindowId: 1), "real")
+    }
+
+    func testApplicationShortcutTargetFallsBackToWindowlessPlaceholder() {
+        let candidate = ApplicationShortcutTargetCandidate(id: "placeholder", windowId: nil, isPhantom: false, isTabbed: false, isWindowless: true, lastFocusOrder: 0)
+        XCTAssertEqual(ApplicationShortcutTargetResolver.resolve([candidate], lastAttendedWindowId: nil), "placeholder")
+    }
+
+    func testApplicationLaunchGateDeduplicatesUntilFinished() {
+        let gate = ApplicationLaunchGate()
+        XCTAssertTrue(gate.begin("com.example.app"))
+        XCTAssertFalse(gate.begin("com.example.app"))
+        gate.finish("com.example.app")
+        XCTAssertTrue(gate.begin("com.example.app"))
+    }
+
+    func testApplicationShortcutDecodingKeepsValidRowsAroundMalformedRow() throws {
+        let valid = ApplicationShortcut(id: UUID(), chord: nil, bundleIdentifier: "com.example.app", bundleURL: nil, displayName: "Example")
+        let encoded = try JSONEncoder().encode(valid)
+        let object = try JSONSerialization.jsonObject(with: encoded)
+        let data = try JSONSerialization.data(withJSONObject: [object, ["broken": true], object])
+        let decoded = try JSONDecoder().decode(LossyArray<ApplicationShortcut>.self, from: data)
+        XCTAssertEqual(decoded.elements, [valid, valid])
     }
 
     private func resetState() {
