@@ -82,10 +82,6 @@ enum ApplicationShortcutModifiers {
         return result
     }
 
-    static func withPhysicalFunction(_ modifiers: UInt, _ physicalFunction: Bool) -> UInt {
-        physicalFunction ? modifiers | function : modifiers
-    }
-
     static func from(_ flags: NSEvent.ModifierFlags, physicalFunction: Bool) -> UInt {
         var result: UInt = 0
         if flags.contains(.command) { result |= command }
@@ -113,6 +109,39 @@ enum ApplicationShortcutModifiers {
         if modifiers & option != 0 { result |= UInt32(optionKey) }
         if modifiers & shift != 0 { result |= UInt32(shiftKey) }
         return result
+    }
+}
+
+struct ApplicationShortcutRuntimeInput {
+    let keyCode: UInt16
+    let flags: CGEventFlags
+    let isRepeat: Bool
+    let timestamp: UInt64
+}
+
+enum ApplicationShortcutRuntimeMatch: Equatable {
+    case unmatched
+    case matched(UUID)
+    case duplicate(UUID)
+}
+
+enum ApplicationShortcutRuntimeMatcher {
+    static func match(_ input: ApplicationShortcutRuntimeInput,
+                      mappings: [ApplicationShortcutKey: UUID]) -> UUID? {
+        let modifiers = ApplicationShortcutModifiers.from(input.flags)
+        return mappings[ApplicationShortcutKey(keyCode: input.keyCode, modifiers: modifiers)]
+    }
+
+    static func classify(_ input: ApplicationShortcutRuntimeInput,
+                         mappings: [ApplicationShortcutKey: UUID], enabled: Bool, recording: Bool,
+                         lastTriggeredTimestamp: UInt64) -> (ApplicationShortcutRuntimeMatch, UInt64) {
+        guard enabled, !recording, let id = match(input, mappings: mappings) else {
+            return (.unmatched, lastTriggeredTimestamp)
+        }
+        guard !input.isRepeat, input.timestamp != lastTriggeredTimestamp else {
+            return (.duplicate(id), lastTriggeredTimestamp)
+        }
+        return (.matched(id), input.timestamp)
     }
 }
 

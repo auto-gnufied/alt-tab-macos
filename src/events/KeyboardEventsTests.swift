@@ -354,9 +354,101 @@ final class KeyboardEventsUtilsTests: XCTestCase {
         XCTAssertEqual(ApplicationShortcutModifiers.string(modifiers), "fn ⌥⌘")
     }
 
-    func testApplicationShortcutRuntimeAddsTrackedPhysicalFunction() {
-        let modifiers = ApplicationShortcutModifiers.withPhysicalFunction(ApplicationShortcutModifiers.shift, true)
-        XCTAssertEqual(modifiers, ApplicationShortcutModifiers.function | ApplicationShortcutModifiers.shift)
+    func testApplicationShortcutRuntimeRequiresFunctionOnCurrentEvent() {
+        let id = UUID()
+        let mappings = [ApplicationShortcutKey(keyCode: 17, modifiers: ApplicationShortcutModifiers.function): id]
+        let plain = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [], isRepeat: false, timestamp: 1)
+        let function = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [.maskSecondaryFn], isRepeat: false, timestamp: 2)
+        XCTAssertNil(ApplicationShortcutRuntimeMatcher.match(plain, mappings: mappings))
+        XCTAssertEqual(ApplicationShortcutRuntimeMatcher.match(function, mappings: mappings), id)
+    }
+
+    func testApplicationShortcutRuntimeUsesExactModifiers() {
+        let functionId = UUID()
+        let shiftedId = UUID()
+        let mappings = [
+            ApplicationShortcutKey(keyCode: 17, modifiers: ApplicationShortcutModifiers.function): functionId,
+            ApplicationShortcutKey(keyCode: 17, modifiers: ApplicationShortcutModifiers.function | ApplicationShortcutModifiers.shift): shiftedId,
+        ]
+        let shift = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [.maskShift], isRepeat: false, timestamp: 1)
+        let functionShift = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [.maskSecondaryFn, .maskShift], isRepeat: false, timestamp: 2)
+        XCTAssertNil(ApplicationShortcutRuntimeMatcher.match(shift, mappings: mappings))
+        XCTAssertEqual(ApplicationShortcutRuntimeMatcher.match(functionShift, mappings: mappings), shiftedId)
+    }
+
+    func testApplicationShortcutRuntimeIgnoresEventFlagNoise() {
+        let id = UUID()
+        let mappings = [ApplicationShortcutKey(keyCode: 17, modifiers: ApplicationShortcutModifiers.function): id]
+        let input = ApplicationShortcutRuntimeInput(
+            keyCode: 17, flags: [.maskSecondaryFn, .maskAlphaShift, .maskNumericPad, .maskNonCoalesced],
+            isRepeat: false, timestamp: 1)
+        XCTAssertEqual(ApplicationShortcutRuntimeMatcher.match(input, mappings: mappings), id)
+    }
+
+    func testApplicationShortcutHistoricalFunctionCannotMatchPlainKey() {
+        let id = UUID()
+        let mappings = [ApplicationShortcutKey(keyCode: 17, modifiers: ApplicationShortcutModifiers.function): id]
+        let function = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [.maskSecondaryFn], isRepeat: false, timestamp: 1)
+        let plain = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [], isRepeat: false, timestamp: 2)
+        let first = ApplicationShortcutRuntimeMatcher.classify(
+            function, mappings: mappings, enabled: true, recording: false, lastTriggeredTimestamp: .max)
+        let second = ApplicationShortcutRuntimeMatcher.classify(
+            plain, mappings: mappings, enabled: true, recording: false, lastTriggeredTimestamp: first.1)
+        XCTAssertEqual(first.0, .matched(id))
+        XCTAssertEqual(second.0, .unmatched)
+    }
+
+    func testApplicationShortcutDifferentMappedLettersDoNotShareFunctionState() {
+        let firefox = UUID()
+        let iterm = UUID()
+        let mappings = [
+            ApplicationShortcutKey(keyCode: 3, modifiers: ApplicationShortcutModifiers.function): firefox,
+            ApplicationShortcutKey(keyCode: 17, modifiers: ApplicationShortcutModifiers.function): iterm,
+        ]
+        let functionF = ApplicationShortcutRuntimeInput(keyCode: 3, flags: [.maskSecondaryFn], isRepeat: false, timestamp: 1)
+        let plainT = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [], isRepeat: false, timestamp: 2)
+        let first = ApplicationShortcutRuntimeMatcher.classify(
+            functionF, mappings: mappings, enabled: true, recording: false, lastTriggeredTimestamp: .max)
+        let second = ApplicationShortcutRuntimeMatcher.classify(
+            plainT, mappings: mappings, enabled: true, recording: false, lastTriggeredTimestamp: first.1)
+        XCTAssertEqual(first.0, .matched(firefox))
+        XCTAssertEqual(second.0, .unmatched)
+    }
+
+    func testApplicationShortcutDuplicateTimestampAndRepeatDoNotDispatchAgain() {
+        let id = UUID()
+        let mappings = [ApplicationShortcutKey(keyCode: 17, modifiers: ApplicationShortcutModifiers.function): id]
+        let input = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [.maskSecondaryFn], isRepeat: false, timestamp: 1)
+        let repeatInput = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [.maskSecondaryFn], isRepeat: true, timestamp: 2)
+        XCTAssertEqual(ApplicationShortcutRuntimeMatcher.classify(
+            input, mappings: mappings, enabled: true, recording: false, lastTriggeredTimestamp: 1).0, .duplicate(id))
+        XCTAssertEqual(ApplicationShortcutRuntimeMatcher.classify(
+            repeatInput, mappings: mappings, enabled: true, recording: false, lastTriggeredTimestamp: .max).0, .duplicate(id))
+    }
+
+    func testApplicationShortcutDistinctPressesDispatchIndependently() {
+        let id = UUID()
+        let mappings = [ApplicationShortcutKey(keyCode: 17, modifiers: ApplicationShortcutModifiers.function): id]
+        let first = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [.maskSecondaryFn], isRepeat: false, timestamp: 1)
+        let second = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [.maskSecondaryFn], isRepeat: false, timestamp: 2)
+        let firstResult = ApplicationShortcutRuntimeMatcher.classify(
+            first, mappings: mappings, enabled: true, recording: false, lastTriggeredTimestamp: .max)
+        let secondResult = ApplicationShortcutRuntimeMatcher.classify(
+            second, mappings: mappings, enabled: true, recording: false, lastTriggeredTimestamp: firstResult.1)
+        XCTAssertEqual(firstResult.0, .matched(id))
+        XCTAssertEqual(secondResult.0, .matched(id))
+    }
+
+    func testApplicationShortcutDisabledAndRecordingStatesFailClosed() {
+        let id = UUID()
+        let mappings = [ApplicationShortcutKey(keyCode: 17, modifiers: ApplicationShortcutModifiers.function): id]
+        let input = ApplicationShortcutRuntimeInput(keyCode: 17, flags: [.maskSecondaryFn], isRepeat: false, timestamp: 1)
+        XCTAssertEqual(ApplicationShortcutRuntimeMatcher.classify(
+            input, mappings: mappings, enabled: false, recording: false, lastTriggeredTimestamp: .max).0, .unmatched)
+        XCTAssertEqual(ApplicationShortcutRuntimeMatcher.classify(
+            input, mappings: mappings, enabled: true, recording: true, lastTriggeredTimestamp: .max).0, .unmatched)
+        XCTAssertEqual(ApplicationShortcutRuntimeMatcher.classify(
+            input, mappings: [:], enabled: true, recording: false, lastTriggeredTimestamp: .max).0, .unmatched)
     }
 
     func testApplicationShortcutChordIdentityIgnoresDisplayLabel() {
