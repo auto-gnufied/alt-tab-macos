@@ -1,4 +1,43 @@
+import Cocoa
 import ShortcutRecorder
+
+enum ApplicationShortcutModifiers {
+    static let command = UInt(1 << 0)
+    static let control = UInt(1 << 1)
+    static let option = UInt(1 << 2)
+    static let shift = UInt(1 << 3)
+    static let function = UInt(1 << 4)
+
+    static func from(_ flags: CGEventFlags) -> UInt {
+        var result: UInt = 0
+        if flags.contains(.maskCommand) { result |= command }
+        if flags.contains(.maskControl) { result |= control }
+        if flags.contains(.maskAlternate) { result |= option }
+        if flags.contains(.maskShift) { result |= shift }
+        if flags.contains(.maskSecondaryFn) { result |= function }
+        return result
+    }
+
+    static func from(_ flags: NSEvent.ModifierFlags) -> UInt {
+        var result: UInt = 0
+        if flags.contains(.command) { result |= command }
+        if flags.contains(.control) { result |= control }
+        if flags.contains(.option) { result |= option }
+        if flags.contains(.shift) { result |= shift }
+        if flags.contains(.function) { result |= function }
+        return result
+    }
+
+    static func string(_ modifiers: UInt) -> String {
+        var result = ""
+        if modifiers & function != 0 { result += "fn " }
+        if modifiers & control != 0 { result += "⌃" }
+        if modifiers & option != 0 { result += "⌥" }
+        if modifiers & shift != 0 { result += "⇧" }
+        if modifiers & command != 0 { result += "⌘" }
+        return result
+    }
+}
 
 class KeyboardEventsTestable {
     static var globalShortcutsIds: [String: Int] {

@@ -295,6 +295,23 @@ final class KeyboardEventsUtilsTests: XCTestCase {
         XCTAssertEqual(ControlsTab.shortcutsActionsTriggered, ["nextWindowShortcut", "nextWindowShortcut2", "holdShortcut2"])
     }
 
+    func testApplicationShortcutModifierNormalizationPreservesFunction() {
+        let cocoa = ApplicationShortcutModifiers.from(NSEvent.ModifierFlags([.function, .shift]))
+        let quartz = ApplicationShortcutModifiers.from(CGEventFlags([.maskSecondaryFn, .maskShift]))
+        XCTAssertEqual(cocoa, quartz)
+        XCTAssertEqual(cocoa, ApplicationShortcutModifiers.function | ApplicationShortcutModifiers.shift)
+    }
+
+    func testApplicationShortcutModifierNormalizationIgnoresNoise() {
+        let flags = CGEventFlags([.maskSecondaryFn, .maskAlphaShift, .maskNumericPad, .maskNonCoalesced])
+        XCTAssertEqual(ApplicationShortcutModifiers.from(flags), ApplicationShortcutModifiers.function)
+    }
+
+    func testApplicationShortcutModifierDisplayUsesFnFirst() {
+        let modifiers = ApplicationShortcutModifiers.function | ApplicationShortcutModifiers.option | ApplicationShortcutModifiers.command
+        XCTAssertEqual(ApplicationShortcutModifiers.string(modifiers), "fn ⌥⌘")
+    }
+
     private func resetState() {
         SwitcherSession.current = nil
         Preferences.shortcutStyle = .focusOnRelease
