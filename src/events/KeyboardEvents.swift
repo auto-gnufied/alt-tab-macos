@@ -43,6 +43,8 @@ class KeyboardEvents {
             if let keySequence = ModifierReleaseLog.recordKeyDown(keyCode, modifiers, isARepeat: isARepeat) {
                 forgetIfNeverReported(keySequence)
             }
+            _ = ApplicationShortcutsController.handleKeyDown(UInt16(keyCode), cgEvent.flags, isARepeat,
+                                                              cgEvent.timestamp)
             return Unmanaged.passUnretained(cgEvent)
         case .tapDisabledByUserInput, .tapDisabledByTimeout:
             Logger.info { "input tap \(type == .tapDisabledByTimeout ? "timed out" : "was disabled by user input")" }
@@ -293,6 +295,8 @@ enum ApplicationShortcutsController {
     private static var fnMappings = [ApplicationShortcutKey: UUID]()
     private static var mappingsById = [UUID: ApplicationShortcut]()
     private static var suppressedKeyCodes = Set<UInt16>()
+    private static var physicalFunctionIsDown = false
+    private static var lastTriggeredEventTimestamp = UInt64.max
     private static var eventTap: CFMachPort?
     private static var carbonHandler: EventHandlerRef?
     private static var carbonHotKeys = [EventHotKeyRef?]()
@@ -308,33 +312,53 @@ enum ApplicationShortcutsController {
             DispatchQueue.main.async { updateTapState() }
             return Unmanaged.passUnretained(event)
         }
+        if type == .flagsChanged {
+            lock.withLock { physicalFunctionIsDown = event.flags.contains(.maskSecondaryFn) }
+            return Unmanaged.passUnretained(event)
+        }
         guard type == .keyDown || type == .keyUp else { return Unmanaged.passUnretained(event) }
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         if type == .keyUp {
             let wasSuppressed = lock.withLock { suppressedKeyCodes.remove(keyCode) != nil }
             return wasSuppressed ? nil : Unmanaged.passUnretained(event)
         }
-        let modifiers = ApplicationShortcutModifiers.from(event.flags)
-        let mappingId = lock.withLock { fnMappings[ApplicationShortcutKey(keyCode: keyCode, modifiers: modifiers)] }
-        guard let mappingId else { return Unmanaged.passUnretained(event) }
-        lock.withLock { _ = suppressedKeyCodes.insert(keyCode) }
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-        if !isRepeat { DispatchQueue.main.async { activate(mappingId) } }
+        guard handleKeyDown(keyCode, event.flags, isRepeat, event.timestamp) else {
+            return Unmanaged.passUnretained(event)
+        }
+        lock.withLock { _ = suppressedKeyCodes.insert(keyCode) }
         return nil
     }
 
+    fileprivate static func handleKeyDown(_ keyCode: UInt16, _ flags: CGEventFlags, _ isRepeat: Bool,
+                                          _ timestamp: UInt64) -> Bool {
+        let eventModifiers = ApplicationShortcutModifiers.from(flags)
+        let physicalFunction = eventModifiers & ApplicationShortcutModifiers.function != 0
+            || CGEventSource.flagsState(.combinedSessionState).contains(.maskSecondaryFn)
+        let result = lock.withLock { () -> (UUID?, Bool) in
+            let modifiers = ApplicationShortcutModifiers.withPhysicalFunction(eventModifiers, physicalFunctionIsDown || physicalFunction)
+            let mappingId = fnMappings[ApplicationShortcutKey(keyCode: keyCode, modifiers: modifiers)]
+            guard mappingId != nil, !isRepeat, timestamp != lastTriggeredEventTimestamp else { return (mappingId, false) }
+            lastTriggeredEventTimestamp = timestamp
+            return (mappingId, true)
+        }
+        if result.1, let mappingId = result.0 { DispatchQueue.main.async { activate(mappingId) } }
+        return result.0 != nil
+    }
+
     static func initialize() {
-        let mask = [CGEventType.keyDown, .keyUp].reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
+        let mask = [CGEventType.flagsChanged, .keyDown, .keyUp].reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
         eventTap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
                                      eventsOfInterest: mask, callback: eventHandler, userInfo: nil)
+        installCarbonHandler()
+        refresh()
         guard let eventTap else {
-            Logger.error { "could not create application-shortcut event tap" }
+            Logger.error { "could not create application-shortcut suppression tap; passive detection remains active" }
             return
         }
         let source = CFMachPortCreateRunLoopSource(nil, eventTap, 0)
         CFRunLoopAddSource(BackgroundWork.keyboardAndMouseAndTrackpadEventsThread.runLoop, source, .commonModes)
-        installCarbonHandler()
-        refresh()
+        updateTapState()
     }
 
     static func refresh() {
@@ -378,6 +402,8 @@ enum ApplicationShortcutsController {
     private static func updateTapState() {
         guard let eventTap else { return }
         let shouldEnable = enabled && !recording && lock.withLock { !fnMappings.isEmpty }
+        let physicalFunction = shouldEnable && CGEventSource.flagsState(.combinedSessionState).contains(.maskSecondaryFn)
+        lock.withLock { physicalFunctionIsDown = physicalFunction }
         CGEvent.tapEnable(tap: eventTap, enable: shouldEnable)
     }
 

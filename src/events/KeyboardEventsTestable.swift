@@ -82,6 +82,10 @@ enum ApplicationShortcutModifiers {
         return result
     }
 
+    static func withPhysicalFunction(_ modifiers: UInt, _ physicalFunction: Bool) -> UInt {
+        physicalFunction ? modifiers | function : modifiers
+    }
+
     static func from(_ flags: NSEvent.ModifierFlags, physicalFunction: Bool) -> UInt {
         var result: UInt = 0
         if flags.contains(.command) { result |= command }

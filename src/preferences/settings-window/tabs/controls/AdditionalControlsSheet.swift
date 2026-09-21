@@ -152,7 +152,7 @@ final class ApplicationShortcutsSheet: SheetWindow {
             let remove = Button(NSLocalizedString("Remove", comment: "")) { [weak self] _ in
                 var mappings = Preferences.applicationShortcuts
                 mappings.removeAll { $0.id == mapping.id }
-                Preferences.set("applicationShortcuts", mappings)
+                Preferences.setJson("applicationShortcuts", mappings)
                 self?.rebuild()
             }
             let icon = NSImageView(image: AppDisplayInfo.genericIcon)
@@ -173,6 +173,7 @@ final class ApplicationShortcutsSheet: SheetWindow {
         }
         rowsStack.addArrangedSubview(add)
         add.trailingAnchor.constraint(equalTo: rowsStack.trailingAnchor).isActive = true
+        resizeToFitContent()
     }
 
     private static func update(_ id: UUID, _ chord: ApplicationShortcutChord?) -> Bool {
@@ -180,7 +181,7 @@ final class ApplicationShortcutsSheet: SheetWindow {
         guard let index = mappings.firstIndex(where: { $0.id == id }) else { return false }
         guard resolveConflicts(id, chord, &mappings) else { return false }
         mappings[index].chord = chord
-        Preferences.set("applicationShortcuts", mappings)
+        Preferences.setJson("applicationShortcuts", mappings)
         shared?.rebuild()
         return true
     }
@@ -252,7 +253,7 @@ final class ApplicationShortcutsSheet: SheetWindow {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.application]
         panel.canChooseDirectories = false
-        panel.beginSheetModal(for: self) { [weak self] response in
+        panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url, let bundle = Bundle(url: url),
                   let bundleIdentifier = bundle.bundleIdentifier else { return }
             let name = (bundle.localizedInfoDictionary?["CFBundleDisplayName"] as? String)
@@ -269,8 +270,16 @@ final class ApplicationShortcutsSheet: SheetWindow {
         let name = displayName ?? bundleURL?.deletingPathExtension().lastPathComponent ?? bundleIdentifier
         mappings.append(ApplicationShortcut(id: UUID(), chord: nil, bundleIdentifier: bundleIdentifier,
                                             bundleURL: bundleURL, displayName: name))
-        Preferences.set("applicationShortcuts", mappings)
+        Preferences.setJson("applicationShortcuts", mappings)
         rebuild()
+    }
+
+    private func resizeToFitContent() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let contentView else { return }
+            contentView.layoutSubtreeIfNeeded()
+            setContentSize(contentView.fittingSize)
+        }
     }
 
     private static func loadIcon(_ mapping: ApplicationShortcut, into imageView: NSImageView) {
