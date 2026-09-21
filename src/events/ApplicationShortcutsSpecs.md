@@ -8,7 +8,7 @@ Application shortcuts bind a physical key chord to an application bundle identif
 - The display label is metadata and is not part of chord equality or hashing.
 - Runtime `fn` comes from `CGEventFlags.maskSecondaryFn`.
 - Recording accepts Function only when the physical Core Graphics Function flag is present. AppKit's implicit `.function` flag on arrows and F-row keys is not treated as a held `fn` modifier.
-- Chords containing Function use the active event tap. The callback performs one locked dictionary lookup, enqueues only the mapping UUID, suppresses the matched down/up pair, and ignores autorepeat activation.
+- Chords containing Function are detected by the permanent passive keyboard tap, using both tracked flags-changed state and the same physical Function-state query as the recorder. A separate active tap suppresses a matched down/up pair when macOS permits its creation; detection remains functional without it. Duplicate delivery across the two taps is rejected by event timestamp.
 - Chords without Function use Carbon hotkeys. The application-shortcut Carbon handler forwards events with other signatures to the next handler.
 - The active tap is enabled only when shortcuts are enabled, recording is inactive, and at least one Function mapping exists.
 

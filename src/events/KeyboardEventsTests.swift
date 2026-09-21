@@ -317,6 +317,11 @@ final class KeyboardEventsUtilsTests: XCTestCase {
         XCTAssertEqual(ApplicationShortcutModifiers.string(modifiers), "fn ⌥⌘")
     }
 
+    func testApplicationShortcutRuntimeAddsTrackedPhysicalFunction() {
+        let modifiers = ApplicationShortcutModifiers.withPhysicalFunction(ApplicationShortcutModifiers.shift, true)
+        XCTAssertEqual(modifiers, ApplicationShortcutModifiers.function | ApplicationShortcutModifiers.shift)
+    }
+
     func testApplicationShortcutChordIdentityIgnoresDisplayLabel() {
         let first = ApplicationShortcutChord(keyCode: 5, modifiers: ApplicationShortcutModifiers.function, keyLabel: "G")
         let second = ApplicationShortcutChord(keyCode: 5, modifiers: ApplicationShortcutModifiers.function, keyLabel: "g")

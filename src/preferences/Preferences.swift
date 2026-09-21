@@ -218,6 +218,10 @@ class Preferences {
         write(key, notify) { UserDefaults.standard.set(key == "exceptions" ? jsonEncode(value) : value, forKey: key) }
     }
 
+    static func setJson<T>(_ key: String, _ value: T, _ notify: Bool = true) where T: Encodable {
+        write(key, notify) { UserDefaults.standard.set(jsonEncode(value), forKey: key) }
+    }
+
     static func remove(_ key: String, _ notify: Bool = true) {
         write(key, notify) { UserDefaults.standard.removeObject(forKey: key) }
     }
