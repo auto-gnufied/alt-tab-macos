@@ -2360,6 +2360,8 @@
 				AECF000000000000000000A3 /* Endpoints.swift in Sources */,
 				2141C4AE3060CE1700B569E9 /* SearchSelectionLearning.swift in Sources */,
 				2141C4B23060CE1F00B569E9 /* SearchSelectionLearningTests.swift in Sources */,
+				2141C4AE3060CE1700B569E9 /* SearchSelectionLearning.swift in Sources */,
+				2141C4B23060CE1F00B569E9 /* SearchSelectionLearningTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2601,6 +2603,8 @@
 				BF0C8A5FA46C5E74A071FF4C /* ScrollwheelEvents.swift in Sources */,
 				BF0C82E9AB495AAAA182764A /* CursorEvents.swift in Sources */,
 				BF0C8F8F1B7A3C4D5E6F7082 /* ContextMenuEvents.swift in Sources */,
+				2141C4B53060CF9B00B569E9 /* SearchSelectionLearning.swift in Sources */,
+				2141C4B63060CFA700B569E9 /* SearchSelectionLearningRuntime.swift in Sources */,
 				2141C4B53060CF9B00B569E9 /* SearchSelectionLearning.swift in Sources */,
 				2141C4B63060CFA700B569E9 /* SearchSelectionLearningRuntime.swift in Sources */,
 			);
