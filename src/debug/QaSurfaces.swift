@@ -76,6 +76,7 @@ enum QaSurfaces {
     private static var currentId: String?
     private static var windowsBefore = Set<UInt32>()
     private static var popovers = NSHashTable<NSPopover>.weakObjects()
+    private static var visualPopoverAnchor: NSWindow?
     private static var observingPopovers = false
     private static var renderGeneration = 0
     private static var settlingGeneration: Int?
@@ -114,6 +115,7 @@ enum QaSurfaces {
         pinVolatileContent()
         closeAll(keepSettings: surface.inSettings)
         currentId = id
+        AnchoredPopover.qaPositioningView = positioningView
         let generation = renderGeneration
         if id != "switcher" { App.shared.activate(ignoringOtherApps: true) }
         if surface.inSettings { SettingsWindow.shared?.disableScreenUpdatesUntilFlush() }
@@ -189,6 +191,8 @@ enum QaSurfaces {
     /// Day 4 of the trial and a long-expired one, rather than whatever day the machine happens to be on: the
     /// day count is printed in the Upgrade button, the menubar menu and the prompts.
     static func setLicense(_ license: String) {
+        QaLifecycleEnvironment.visualNow = Calendar(identifier: .gregorian).date(from:
+            DateComponents(year: 2026, month: 10, day: 21, hour: 12))
         SettingsWindow.qaDiscard()
         switch license {
             case "trial":
@@ -202,6 +206,7 @@ enum QaSurfaces {
     }
 
     static func closeAll(keepSettings: Bool = false) {
+        ProPromptHost.windowPresentation.cancel()
         renderGeneration += 1
         settlingGeneration = nil
         readyGeneration = nil
@@ -209,18 +214,20 @@ enum QaSurfaces {
         Menubar.menu.cancelTrackingWithoutAnimation()
         if NSApp.modalWindow != nil { NSApp.abortModal() }
         popovers.allObjects.forEach { $0.close() }
+        AnchoredPopover.qaPositioningView = nil
+        visualPopoverAnchor?.orderOut(nil)
         Popover.shared.hide()
         if SwitcherSession.isActive { App.hideUi() }
-        if let settings = SettingsWindow.shared, let sheet = settings.attachedSheet {
+        for parent in [SettingsWindow.shared, FeedbackWindow.shared].compactMap({ $0 }) {
+            guard let sheet = parent.attachedSheet else { continue }
             sheet.animationBehavior = .none
             QaSheetAnimation.disable(on: sheet)
-            settings.endSheet(sheet)
+            parent.endSheet(sheet)
             sheet.orderOut(nil)
         }
         if !keepSettings { SettingsWindow.qaDiscard() }
         let windows: [NSWindow?] = [AboutWindow.shared, FeedbackWindow.shared, PermissionsWindow.shared,
-            Day1WelcomeLetterWindow.shared, Day15ProactiveWindow.shared, Day15FullUpgradeWindow.shared,
-            Day35FinalWindow.shared]
+            Day15FullUpgradeWindow.shared, Day35FinalWindow.shared]
         windows.compactMap { $0 }.filter { $0.isVisible }.forEach { $0.close() }
         PermissionsWindow.qaForcedStatus = nil
         current = nil
@@ -302,20 +309,26 @@ enum QaSurfaces {
             Surface(id: "pro.welcome.new", licenses: trial, inSettings: false) { welcome(freshInstall: true) },
             Surface(id: "pro.welcome.upgrade", licenses: trial, inSettings: false) { welcome(freshInstall: false) },
             Surface(id: "pro.day4-tour", licenses: trial, inSettings: false) { Day4TourPopover.show(); return Target() },
-            Surface(id: "pro.day12-heads-up", licenses: trial, inSettings: false) { Day12HeadsUpPopover.show(); return Target() },
-            Surface(id: "pro.day15-proactive", licenses: expired, inSettings: false) {
-                Day15ProactiveWindow.show()
-                return target(Day15ProactiveWindow.shared)
-            },
-            Surface(id: "pro.day21-reminder", licenses: expired, inSettings: false) { Day21ReminderPopover.show(); return Target() },
             Surface(id: "pro.day35-final", licenses: expired, inSettings: false) {
-                Day35FinalWindow.show()
-                return target(Day35FinalWindow.shared)
+                ProPromptWindow.showWithTrialEvidence { evidence in
+                    let window = Day35FinalWindow(evidence: evidence, preferred: ProTransitionManager.shared.state.lastIntent)
+                    Day35FinalWindow.shared = window
+                    App.showSecondaryWindow(window)
+                }
+                return Target()
             },
         ] + reasons.flatMap { name, reason in
             [
                 Surface(id: "pro.day15-full-upgrade.\(name)", licenses: expired, inSettings: false) {
+                    // A Pro style kept until expiry is one the trial adopted, so the window opens on it.
+                    // The evidence is read synchronously when it is set, so it can be restored right after.
+                    let previous = UsageStats.qaEvidence
+                    if case let .proPreferences(style?, _) = reason {
+                        UsageStats.qaEvidence = ProJourneyEvidence(searches: UsageStats.qaPinned?["searches"]?.count,
+                            extraShortcuts: UsageStats.qaPinned?["triggersExtraShortcuts"]?.count, adoptedStyle: style.index)
+                    }
                     Day15FullUpgradeWindow.show(for: reason)
+                    UsageStats.qaEvidence = previous
                     return target(Day15FullUpgradeWindow.shared)
                 },
                 Surface(id: "pro.day15-hard-gate.\(name)", licenses: expired, inSettings: false) {
@@ -326,34 +339,44 @@ enum QaSurfaces {
         }
     }
 
-    /// Alerts run a modal loop of their own, so they are opened on the next turn of the main loop and the
-    /// harness finds their window among the ones that appeared. `closeAll` aborts the loop, and every caller
-    /// here reads an aborted alert as neither of its buttons, so nothing is reset, activated or sent.
+    /// Alerts are opened on the next turn of the main loop: some run a modal loop of their own. The launch-time
+    /// ones are app-modal, and the harness finds their window among the ones that appeared. The others are sheets
+    /// on the Settings section they belong to, or on Feedback. `closeAll` aborts any loop and ends the sheets, and
+    /// every caller here reads that as neither of its buttons, so nothing is reset, activated or sent.
     private static func alertSurfaces() -> [Surface] {
-        let alerts: [(String, () -> Void)] = [
-            ("reset-settings", { GeneralTab.resetPreferences() }),
-            ("language-change", { GeneralTab.setLanguageCallback(NSControl()) }),
-            ("conflicting-shortcut", { _ = ControlsTab.confirmUnassigningConflict("• " + NSLocalizedString("Show", comment: "Menubar option")) }),
+        let appModal: [(String, () -> Void)] = [
             ("settings-not-saved.symlink", { PreferencesPersistenceCheck.debugShowDialog(symlinked: true) }),
             ("settings-not-saved.unwritable", { PreferencesPersistenceCheck.debugShowDialog(symlinked: false) }),
-            ("activate-license", { UpgradeTab.presentActivationSheet() }),
-            ("activation-failed", { UpgradeTab.presentActivationSheet(prefilledKey: "QA-LICENSE-KEY", autoFailedHint: true) }),
-            ("seat-limit", { UpgradeTab.presentSeatLimitSheet(key: "QA-LICENSE-KEY", instances: seats) }),
-            ("license-error", { UpgradeTab.presentLicenseError(NSLocalizedString("Activation failed", comment: ""), LicenseAPIError.invalidKey) }),
-            ("license-error.details", {
+        ]
+        // A nil section is the Upgrade page.
+        let settingsSheets: [(String, String?, () -> Void)] = [
+            ("reset-settings", "general", { GeneralTab.resetPreferences() }),
+            ("language-change", "general", { GeneralTab.setLanguageCallback(NSControl()) }),
+            ("conflicting-shortcut", "controls", { _ = ControlsTab.confirmUnassigningConflict("• " + NSLocalizedString("Show", comment: "Menubar option")) }),
+            ("activate-license", nil, { UpgradeTab.presentActivationSheet() }),
+            ("activation-failed", nil, { UpgradeTab.presentActivationSheet(prefilledKey: "QA-LICENSE-KEY", autoFailedHint: true) }),
+            ("seat-limit", nil, { UpgradeTab.presentSeatLimitSheet(key: "QA-LICENSE-KEY", instances: seats) }),
+            ("license-error", nil, { UpgradeTab.presentLicenseError(NSLocalizedString("Activation failed", comment: ""), LicenseAPIError.invalidKey) }),
+            ("license-error.details", nil, {
                 UpgradeTab.presentLicenseError(NSLocalizedString("Activation failed", comment: ""),
                     LicenseAPIError.invalidResponse(debugInfo: "HTTP 500\n{\"error\": \"qa\"}"))
             }),
         ]
-        return alerts.map { name, show in
+        return appModal.map { name, show in
             Surface(id: "alert.\(name)", licenses: nil, inSettings: false) {
                 later(show)
                 return Target()
             }
+        } + settingsSheets.map { name, section, show in
+            Surface(id: "alert.\(name)", licenses: nil, inSettings: true) {
+                _ = settings(section)
+                later(show)
+                return Target(windows: { [SettingsWindow.shared?.attachedSheet].compactMap { $0 } })
+            }
         } + [Surface(id: "alert.feedback-confirm", licenses: nil, inSettings: false) {
             _ = feedback("selectEnhancement")
             later { _ = FeedbackWindow.shared?.perform(NSSelectorFromString("sendCallback")) }
-            return Target()
+            return Target(windows: { [FeedbackWindow.shared?.attachedSheet].compactMap { $0 } })
         }]
     }
 
@@ -409,10 +432,8 @@ enum QaSurfaces {
     }
 
     private static func welcome(freshInstall: Bool) -> Target {
-        Day1WelcomeLetterWindow.shared?.close()
-        Day1WelcomeLetterWindow.shared = nil
-        Day1WelcomeLetterWindow.show(forceFreshInstall: freshInstall)
-        return target(Day1WelcomeLetterWindow.shared)
+        Day1WelcomeLetterPopover.show(forceFreshInstall: freshInstall)
+        return Target()
     }
 
     private static func target(_ window: NSWindow?, pager: (() -> Pager?)? = nil) -> Target {
@@ -446,6 +467,31 @@ enum QaSurfaces {
 
     // MARK: - holding things still
 
+    /// A wide popover is clamped to the screen edge, so its arrow moves with the status item's position
+    /// (including the clock's changing width). VR-01 uses a fixed anchor away from the edges; lifecycle
+    /// and ordinary presentations retain the real status item. The native arrow stays in the comparison.
+    private static func positioningView(_ proposed: NSView) -> NSView {
+        guard currentId != nil, proposed === Menubar.statusItem?.button,
+              let screen = proposed.window?.screen else { return proposed }
+        let window = visualPopoverAnchor ?? makeVisualPopoverAnchor()
+        visualPopoverAnchor = window
+        window.appearance = proposed.effectiveAppearance
+        window.setFrameOrigin(NSPoint(x: screen.frame.midX, y: screen.visibleFrame.maxY))
+        window.orderFrontRegardless()
+        return window.contentView!
+    }
+
+    private static func makeVisualPopoverAnchor() -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1), styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.ignoresMouseEvents = true
+        window.level = .statusBar
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        return window
+    }
+
     private static let seats = [
         ActiveInstance(id: "qa-instance-1", machineName: "MacBook Pro", lastSeenAt: Date(timeIntervalSince1970: 1_767_225_600)),
         ActiveInstance(id: "qa-instance-2", machineName: "Mac mini", lastSeenAt: Date(timeIntervalSince1970: 1_769_904_000)),
@@ -453,6 +499,8 @@ enum QaSurfaces {
 
     /// Relative to now, and re-pinned before every surface, so a week's count cannot drift as the run goes on.
     private static func pinVolatileContent() {
+        // Each capture is an independent presentation, regardless of earlier captures' daily budget.
+        ProTransitionState.defaults.removeObject(forKey: "proJourney.lastMessageAt")
         let now = Int(Date().timeIntervalSince1970)
         // A minute clear of both ends: a count made a few milliseconds after this pin must not decide
         // differently whether the event exactly one week ago belongs to "the past week".
@@ -546,7 +594,8 @@ enum QaSurfaces {
     private static func onScreenWindowNumbers() -> [UInt32] {
         let pid = ProcessInfo.processInfo.processIdentifier
         let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-        let excluded = Set([QAMenu.shared?.windowNumber, Menubar.statusItem?.button?.window?.windowNumber].compactMap { $0 })
+        let excluded = Set([QAMenu.shared?.windowNumber, Menubar.statusItem?.button?.window?.windowNumber,
+                            visualPopoverAnchor?.windowNumber].compactMap { $0 })
         return infos.compactMap { info in
             guard info[kCGWindowOwnerPID as String] as? pid_t == pid,
                   let number = info[kCGWindowNumber as String] as? UInt32,
