@@ -848,6 +848,7 @@ class Windows {
     }
 
     static func removeWindows(_ windows: [Window], _ addWindowlessWindowIfNeeded: Bool) {
+        let removed = windows.map { $0.tracked }
         // Release any pooled TileView pinned to a window we're removing so its thumbnail
         // IOSurface can deallocate now. Otherwise the layer.contents reference keeps the
         // IOSurface alive until the next switcher show — which may be much later, and
@@ -920,7 +921,7 @@ class Windows {
             }
         }
         if addWindowlessWindowIfNeeded {
-            windows.forEach { $0.application.addWindowlessWindowIfNeeded() }
+            windows.forEach { $0.application.addWindowlessWindowIfNeeded(replacing: removed) }
         }
         App.refreshOpenUiAfterExternalEvent([], windowRemoved: true)
     }
